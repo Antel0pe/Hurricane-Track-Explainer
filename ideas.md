@@ -1,3 +1,4 @@
 - show 3d hurricane "wall" roughly where the hurricane exists and is rotating because the rotation isnt what we're interested in but the forces pushing this hurricane. then as you go up and down you can maybe see a 3d "deformation" in hurricane mesh to show vertical wind shear
 - particles at different levels showing wind flow - maybe not specific pressure levels but averaged of pressure levels similar to each other. doesnt always have to be same range but maybe pressure levels that are similar to each other to reduce how many separate levels get rendered
 - think thoughtfully about particles moving in 3d space, too many and its noisy but want to visually show wind direction
+- show wind flow as arrows only where there is coherent recognizable path like jetstream and then when it splits off show 2 different branches. where there is little wind speed, nothing it's empty. can also make the arrows flash from start to finish to simulation motion
