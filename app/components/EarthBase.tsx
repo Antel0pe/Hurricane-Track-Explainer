@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import ThreeGlobe from 'three-globe';
-import { fetchHurricaneAnalysis, fetchHurricaneBaseLatLon, HurricaneAnalysisResponse, HurricaneLayer } from "../utils/apiResponses";
+import { fetchHurricaneAnalysis, fetchHurricaneBaseLatLon, HurricaneAnalysisEntry, HurricaneLayer, SteeringFlow, SteeringVec } from "../utils/apiResponses";
 
 // 1) lat/lon -> world position on your globe (origin-centered)
 function latLonToVec3(latDeg: number, lonDeg: number, radius: number, lonOffsetDeg = 270, latOffsetDeg = 0) {
@@ -66,6 +66,8 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
 
     const hurricaneMeshRef = useRef<THREE.Mesh | null>(null);
     const hurricaneRingsRef = useRef<THREE.Group | null>(null);
+    const hurricaneArrowsRef = useRef<THREE.Group | null>(null);
+
 
     const render = useCallback(() => {
         const renderer = rendererRef.current;
@@ -459,6 +461,8 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
 
     }, [engineReady]);
 
+
+
     /**
    * Given a point on/near a sphere, build an orthonormal tangent frame:
    * - up: outward normal from globe center
@@ -485,10 +489,11 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
     function buildHurricaneStackMesh(params: {
         baseLat: number; // 14.3
         baseLon: number; // -77.4
-        layers: { offX: number; offY: number; value: number }[]; // your 1..10 entries
+        layers: HurricaneLayer[]; // your 1..10 entries
+        steeringFlow: SteeringFlow,
         scene?: THREE.Scene; // optional: if you want to auto-add
     }) {
-        const { baseLat, baseLon, layers, scene } = params;
+        const { baseLat, baseLon, layers, scene, steeringFlow } = params;
         let R = 100;
 
         // ----------------------------
@@ -652,14 +657,132 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
             layerRings.add(loop);
         }
 
+        const STEER_LAYER = { low: 750, mid: 550, high: 350 } as const;
+
+        function localDirFromUV(
+            u_ms: number,
+            v_ms: number,
+            east: THREE.Vector3,
+            north: THREE.Vector3,
+            up: THREE.Vector3,
+            tiltUp = 0.10
+        ) {
+            // u = eastward, v = northward
+            const dir = east.clone().multiplyScalar(u_ms).add(north.clone().multiplyScalar(v_ms));
+
+            // handle near-zero vector gracefully
+            if (dir.lengthSq() < 1e-12) return up.clone();
+
+            dir.normalize();
+            if (tiltUp !== 0) dir.addScaledVector(up, tiltUp).normalize();
+            return dir;
+        }
+
+        function addSteeringArrowAtLayer(
+            label: "low" | "mid" | "high",
+            vec: SteeringVec,
+            pressureLevel: number,
+            color: number
+        ) {
+            // 1) find the layer index for this pressure level
+            const i = layers.findIndex((L) => L.level === pressureLevel);
+            // if (i < 0) return null; // level missing at this hour
+
+            // 2) compute that layer's center (same as your mesh loop)
+            const { offX, offY } = layers[i];
+
+            const dLat = offY * OFFSET_LAT_DEG_PER_UNIT;
+            const dLon = offX * OFFSET_LON_DEG_PER_UNIT;
+
+            const layerLat = baseLat + dLat;
+            const layerLon = baseLon + dLon;
+
+            const layerRadius = R + BASE_CLEARANCE + i * LAYER_SPACING;
+            const center = latLonToVec3(layerLat, layerLon, layerRadius);
+
+            const { east, north } = tangentFrame(center);
+            const up = center.clone().normalize();
+
+            // 3) direction from uv (u=east, v=north)
+            const dir = localDirFromUV(vec.u_ms, vec.v_ms, east, north, up, 0.12);
+
+            // 4) place arrow slightly offset from center
+            // const arrowPos = center.clone().addScaledVector(dir, R * 0.02);
+            // pick a point on the ring (use ring vertex aligned with dir in tangent plane)
+            let bestK = 0;
+            let bestDot = -Infinity;
+
+            for (let k = 0; k < SEGMENTS; k++) {
+                const src = (i * SEGMENTS + k) * 3;
+                const p = new THREE.Vector3(
+                    positions[src + 0],
+                    positions[src + 1],
+                    positions[src + 2],
+                );
+
+                // direction from center to ring point (radially outward in tangent plane)
+                const radialOnRing = p.clone().sub(center).normalize();
+                const d = radialOnRing.dot(dir); // alignment with steering dir
+                if (d > bestDot) {
+                    bestDot = d;
+                    bestK = k;
+                }
+            }
+
+            // start arrow at the *outer edge* of the ring, lifted like your ring lines
+            const src = (i * SEGMENTS + bestK) * 3;
+            const ringPoint = new THREE.Vector3(
+                positions[src + 0],
+                positions[src + 1],
+                positions[src + 2],
+            );
+
+            const arrowPos = ringPoint
+                .clone()
+                .normalize()
+                .multiplyScalar(ringPoint.length() + LINE_LIFT);
+
+            // 5) scale length by speed (optional)
+            const speed = Math.hypot(vec.u_ms, vec.v_ms);
+            const baseLen = R * 0.06;
+            const arrowLen = baseLen * (0.5 + Math.min(speed / 20, 1.5));
+
+            const ah = new THREE.ArrowHelper(
+                dir,
+                arrowPos,
+                arrowLen,
+                color,
+                arrowLen * 0.25,
+                arrowLen * 0.12
+            );
+
+            ah.name = `steering-${label}-${pressureLevel}`;
+            ah.renderOrder = 20;
+            ah.frustumCulled = false;
+            // scene?.add(ah);
+
+            return ah;
+        }
+
+        // usage:
+        const arrows = new THREE.Group();
+        arrows.name = "steering-arrows";
+
+        arrows.add(addSteeringArrowAtLayer("low", steeringFlow.low, STEER_LAYER.low, 0xff0000));
+        arrows.add(addSteeringArrowAtLayer("mid", steeringFlow.mid, STEER_LAYER.mid, 0x00ff00));
+        arrows.add(addSteeringArrowAtLayer("high", steeringFlow.high, STEER_LAYER.high, 0x0000ff));
+
 
         if (scene) scene.add(mesh);
+        if (scene) scene.add(arrows);
         if (scene) scene.add(layerRings);
-        return { mesh, layerRings };
+        return { mesh, layerRings, arrows };
     }
 
-    function analysisToLayers(analysis: HurricaneAnalysisResponse): HurricaneLayer[] {
-        const levelsDesc = Object.keys(analysis)
+    function analysisToLayers(analysis: HurricaneAnalysisEntry): HurricaneLayer[] {
+        const levelsObj = analysis.levels;
+
+        const levelsDesc = Object.keys(levelsObj)
             .map((k) => Number(k))
             .filter((n) => Number.isFinite(n))
             .sort((a, b) => b - a); // descending: 850 -> 250
@@ -667,22 +790,24 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
         const layers: HurricaneLayer[] = [];
 
         for (const lvl of levelsDesc) {
-            const rec = analysis[String(lvl)];
+            const rec = levelsObj[String(lvl)];
             if (!rec || rec.exists !== true) continue;
 
-            const [dLatUnits, dLonUnits] = rec.offsetCenter;
+            const [dLonDeg, dLatDeg] = rec.offsetCenter;
 
             layers.push({
-                offX: dLonUnits,               // lon-units
-                offY: dLatUnits,               // lat-units
-                value: rec.horizontalRadius,   // extent
+                level: lvl,
+                offX: dLonDeg,               // lon offset
+                offY: dLatDeg,               // lat offset
+                value: rec.horizontalRadius, // km
             });
         }
 
         return layers;
     }
 
-    async function demo(scene: THREE.Scene, R: number, timestamp: string) {
+
+    async function demo(scene: THREE.Scene, timestamp: string) {
         const [{ lat, lon }, analysis] = await Promise.all([
             fetchHurricaneBaseLatLon(timestamp),
             fetchHurricaneAnalysis(timestamp),
@@ -695,6 +820,7 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
             baseLon: lon,
             layers,
             scene,
+            steeringFlow: analysis.steering_flow,
         });
     }
 
@@ -706,20 +832,25 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
         // track what THIS effect invocation created
         let createdMesh: THREE.Mesh | null = null;
         let createdRings: THREE.Group | null = null;
+        let createdArrows: THREE.Group | null = null;
 
-        demo(sceneRef.current, getGlobeRadius(globeRef.current), timestamp)
-            .then(({ mesh, layerRings }) => {
+        demo(sceneRef.current, timestamp)
+            .then(({ mesh, layerRings, arrows }) => {
                 if (cancelled) {
                     // if we were already cleaned up, remove immediately
                     mesh.removeFromParent();
                     layerRings.removeFromParent();
+                    arrows.removeFromParent();
                     return;
                 }
                 createdMesh = mesh;
                 createdRings = layerRings;
+                createdArrows = arrows;
+
 
                 hurricaneMeshRef.current = mesh;
                 hurricaneRingsRef.current = layerRings;
+                hurricaneArrowsRef.current = arrows;
             })
             .catch(console.error);
 
@@ -748,9 +879,23 @@ export default function HeightMesh_Shaders({ timestamp }: Props) {
                 createdRings = null;
             }
 
+            if (createdArrows) {
+                createdArrows.removeFromParent();
+                createdArrows.traverse((o: any) => {
+                    o.geometry?.dispose?.();
+                    const mat = o.material;
+                    if (Array.isArray(mat)) mat.forEach((mm: any) => mm?.dispose?.());
+                    else mat?.dispose?.();
+                });
+                // optional: if it's a Group
+                (createdArrows as any).clear?.();
+                createdArrows = null;
+            }
+
             // optional: clear refs if they still point at these objects
             if (hurricaneMeshRef.current === createdMesh) hurricaneMeshRef.current = null;
             if (hurricaneRingsRef.current === createdRings) hurricaneRingsRef.current = null;
+            if (hurricaneArrowsRef.current === createdArrows) hurricaneArrowsRef.current = null;
         };
     }, [sceneRef.current, globeRef.current, timestamp]);
 

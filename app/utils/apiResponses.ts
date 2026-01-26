@@ -31,19 +31,33 @@ export async function fetchHurricaneBaseLatLon(timestamp: string): Promise<Hurri
   };
 }
 
-type HurricaneAnalysisLevel = {
+export type HurricaneAnalysisLevel = {
   exists: boolean;
-  offsetCenter: [number, number]; // [dLatUnits, dLonUnits] per your JSON
-  horizontalRadius: number;
+  offsetCenter: [number, number]; // [dLonDeg, dLatDeg] per your JSON
+  horizontalRadius: number; // km
 };
 
-export type HurricaneAnalysisResponse = Record<string, HurricaneAnalysisLevel>;
+export type HurricaneLayer = { level: number, offX: number; offY: number; value: number };
 
-export type HurricaneLayer = { offX: number; offY: number; value: number };
+export type SteeringVec = {
+  u_ms: number;
+  v_ms: number;
+  coherence_to_motion: number;
+};
 
-const LEVEL_ORDER_DESC = [850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250] as const;
+export type SteeringFlow = {
+  storm_motion: SteeringVec;
+  high: SteeringVec;
+  mid: SteeringVec;
+  low: SteeringVec;
+};
 
-export async function fetchHurricaneAnalysis(timestamp: string): Promise<HurricaneAnalysisResponse> {
+export type HurricaneAnalysisEntry = {
+  levels: Record<string, HurricaneAnalysisLevel>; // keyed by pressure level string: "250", "300", ...
+  steering_flow: SteeringFlow;
+};
+
+export async function fetchHurricaneAnalysis(timestamp: string): Promise<HurricaneAnalysisEntry> {
   const url = `${API_HOST}/api/hurricane_analysis/${encodeURIComponent(timestamp)}`;
 
   const res = await fetch(url, {
@@ -56,9 +70,18 @@ export async function fetchHurricaneAnalysis(timestamp: string): Promise<Hurrica
     throw new Error(`Failed analysis (${res.status}): ${text || res.statusText}`);
   }
 
-  const raw = (await res.json()) as HurricaneAnalysisResponse;
+  const raw = (await res.json()) as HurricaneAnalysisEntry;
+
+  // Minimal structural sanity checks (keep it lightweight)
   if (!raw || typeof raw !== "object") {
     throw new Error(`Invalid analysis payload: ${JSON.stringify(raw)}`);
   }
+  if (!raw.levels || typeof raw.levels !== "object") {
+    throw new Error(`Invalid analysis.levels: ${JSON.stringify(raw)}`);
+  }
+  if (!raw.steering_flow || typeof raw.steering_flow !== "object") {
+    throw new Error(`Invalid analysis.steering_flow: ${JSON.stringify(raw)}`);
+  }
+
   return raw;
 }

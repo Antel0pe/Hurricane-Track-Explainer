@@ -49,7 +49,7 @@ function parseDatehour(datehour: string): Date {
 }
 
 /**
- * Your JSON keys look like: "2012-10-22T00:00:00Z"
+ * File keys look like: "2012-10-22T01:00:00Z"
  * We accept datehour to minute, but the data is hourly; we snap to the hour.
  */
 function toHourlyKey(dt: Date): string {
@@ -60,21 +60,51 @@ function toHourlyKey(dt: Date): string {
   return `${y}-${mo}-${d}T${h}:00:00Z`;
 }
 
-// Shape:
+// --------------------
+// Types for new schema
+// --------------------
+//
 // {
-//   "2012-10-22T00:00:00Z": {
-//     "250": { exists: true, offsetCenter: [1.55, 1.85], horizontalRadius: 62.5 },
-//     ...
+//   "2012-10-22T01:00:00Z": {
+//     "levels": {
+//       "250": { "exists": true, "offsetCenter": [1.37, 1.67], "horizontalRadius": 62.5 },
+//       ...
+//     },
+//     "steering_flow": {
+//       "storm_motion": { "u_ms": -2.0, "v_ms": -2.06, "coherence_to_motion": 1 },
+//       "high": { "u_ms": -0.92, "v_ms": -1.53, "coherence_to_motion": 0.99 },
+//       "mid":  { "u_ms": -3.09, "v_ms": -1.09, "coherence_to_motion": 0.95 },
+//       "low":  { "u_ms": -3.52, "v_ms": -0.89, "coherence_to_motion": 0.93 }
+//     }
 //   },
 //   ...
 // }
+
 type LevelValue = {
   exists: boolean;
-  offsetCenter: [number, number];
-  horizontalRadius: number;
+  offsetCenter: [number, number]; // [lon_deg, lat_deg]
+  horizontalRadius: number; // km
 };
-type TimeBlock = Record<string, LevelValue>;
-type InfluenceDB = Record<string, TimeBlock>;
+
+type SteeringVec = {
+  u_ms: number;
+  v_ms: number;
+  coherence_to_motion: number;
+};
+
+type SteeringFlow = {
+  storm_motion: SteeringVec;
+  high: SteeringVec;
+  mid: SteeringVec;
+  low: SteeringVec;
+};
+
+type TimeEntry = {
+  levels: Record<string, LevelValue>;
+  steering_flow: SteeringFlow;
+};
+
+type InfluenceDB = Record<string, TimeEntry>;
 
 export async function GET(
   _req: NextRequest,
@@ -119,9 +149,7 @@ export async function GET(
     );
   }
 
-  // Bounds check: outside range => error
-  // (Compute min/max key once per request; OK for modest file sizes.
-  //  If it gets big, cache keys in module scope.)
+  // Bounds check: outside range => 404
   const keys = Object.keys(db).sort(); // ISO UTC strings sort lexicographically by time
   if (keys.length === 0) {
     return NextResponse.json(
@@ -140,8 +168,8 @@ export async function GET(
     );
   }
 
-  const block = db[key];
-  if (!block) {
+  const entry = db[key];
+  if (!entry) {
     // Inside global bounds but missing this hour
     return NextResponse.json(
       { error: "no such hour exists" },
@@ -149,6 +177,6 @@ export async function GET(
     );
   }
 
-  // Return the full object for that hour (all levels).
-  return NextResponse.json(block);
+  // Return the full object for that hour (levels + steering_flow).
+  return NextResponse.json(entry);
 }

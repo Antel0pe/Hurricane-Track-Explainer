@@ -5,6 +5,7 @@ import pandas as pd
 import json
 from metpy.calc import lat_lon_grid_deltas, vorticity, smooth_gaussian
 from metpy.units import units
+from scipy.spatial.distance import cosine
 
 EARTH_R = 6_371_000.0
 
@@ -320,6 +321,58 @@ def find_era5_center_from_uv(
 def track_latlon_fn(t_iso):
     return interp_storm_latlon(sandyCoords, t_iso)
 
+def _r2(x):
+    try:
+        return float(np.round(x, 2)) if np.isfinite(x) else float(0)
+    except Exception:
+        return float(0)
+
+def _dist_km_grid(lats, lons, lat0, lon0):
+    Lon, Lat = np.meshgrid(lons, lats)
+    km_per_deg = 111.32
+    dx = (Lon - lon0) * km_per_deg * np.cos(np.deg2rad(lat0))
+    dy = (Lat - lat0) * km_per_deg
+    return np.hypot(dx, dy)
+
+def _ring_mean_uv(u, v, lats, lons, lat0, lon0, r0_km, delta_in_km, delta_out_km):
+    d = _dist_km_grid(lats, lons, lat0, lon0)
+    rin, rout = float(r0_km) + delta_in_km, float(r0_km) + delta_out_km
+    m = (d >= rin) & (d <= rout)
+    return float(np.nanmean(np.where(m, u, np.nan))), float(np.nanmean(np.where(m, v, np.nan)))
+
+def _motion_uv_ms(time_str, track_latlon_fn, dt_hours=3.0):
+    t0 = datetime.fromisoformat(time_str.replace("Z", ""))
+    t1 = t0 + timedelta(hours=dt_hours)
+
+    lat0, lon0 = track_latlon_fn(t0.isoformat(timespec="seconds"))
+    lat1, lon1 = track_latlon_fn(t1.isoformat(timespec="seconds"))
+
+    km_per_deg = 111.32
+    dx_km = (lon1 - lon0) * km_per_deg * np.cos(np.deg2rad(lat0))
+    dy_km = (lat1 - lat0) * km_per_deg
+    dt_s = max(0.001, dt_hours * 3600.0)
+    return float(dx_km * 1000.0 / dt_s), float(dy_km * 1000.0 / dt_s)
+
+def _coherence_01(u, v, mu, mv):
+    a = np.array([u, v], dtype=float)
+    b = np.array([mu, mv], dtype=float)
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        return float("nan")
+    if np.linalg.norm(a) < 1e-9 or np.linalg.norm(b) < 1e-9:
+        return float("nan")
+
+    # cosine similarity in [-1, 1]
+    sim = 1.0 - cosine(a, b)
+
+    # normalize to [0, 1]
+    return float((sim + 1.0) * 0.5)
+
+LEVEL_GROUPS = {
+    "high": [250, 300, 350, 400, 450],
+    "mid":  [500, 550, 600, 650],
+    "low":  [700, 750, 800, 850],
+}
+
 allLevelsFile = '../data/sandy2012-windUV_all_levels_from_250_to_850-rechunked.zarr'
 sandyCoordsFile = "../data/sandy2012-coords.csv"
 
@@ -350,9 +403,12 @@ with open(path, "w") as f:
         ref_lat, ref_lon = interp_storm_latlon(sandyCoords, time_str)
 
         hour_obj = {}
+        level_obj = {}
+        level_results = {}
 
         for level in allLevelsDs.level.values:
             lvl_key = f"{float(level):g}"  # "250", "500", "850", ...
+            lvl_f = float(level)
 
             try:
                 u, v, lats, lons = get_uv_at_level_time(allLevelsDs, level=float(level), time=time_str)
@@ -396,18 +452,71 @@ with open(path, "w") as f:
                 dlat_deg = round(dlat_deg, 2)
                 r_km     = round(r_km, 2)
 
-                hour_obj[lvl_key] = {
+                level_obj[lvl_key] = {
                     "exists": bool(exists),
                     "offsetCenter": [dlon_deg, dlat_deg],  # [lon_deg, lat_deg] = ERA5 - REF
                     "horizontalRadius": r_km,              # km
                 }
+                
+                level_results[lvl_f] = {
+                    "exists": bool(exists),
+                    "u": u, "v": v, "lats": lats, "lons": lons,
+                    "center_lat": float(era_lat),
+                    "center_lon": float(era_lon),
+                    "r_influence_km": float(out["r_influence_km"]),
+                }
 
             except Exception:
-                hour_obj[lvl_key] = {
+                level_obj[lvl_key] = {
                     "exists": False,
                     "offsetCenter": [0.0, 0.0],
                     "horizontalRadius": 0.0,
                 }
+                
+        dt_hours = 1.0 if (t + timedelta(hours=1)) <= end else 0.0
+        mu, mv = _motion_uv_ms(time_str, track_latlon_fn, dt_hours=dt_hours)
+
+        steering_flow = {
+            "storm_motion": {"u_ms": _r2(mu), "v_ms": _r2(mv), "coherence_to_motion": 1},
+        }
+
+        for group, levels in LEVEL_GROUPS.items():
+            uv_list = []
+
+            for lvl in levels:
+                rec = level_results.get(float(lvl))
+                if not rec or not rec.get("exists", False):
+                    continue
+
+                r_km = rec["r_influence_km"]
+                if not np.isfinite(r_km) or r_km <= 0:
+                    continue
+
+                um, vm = _ring_mean_uv(
+                    rec["u"], rec["v"], rec["lats"], rec["lons"],
+                    rec["center_lat"], rec["center_lon"],
+                    r_km,
+                    0.0, 400.0
+                )
+
+                if np.isfinite(um) and np.isfinite(vm):
+                    uv_list.append((um, vm))
+
+            if not uv_list:
+                steering_flow[group] = {"u_ms": float("nan"), "v_ms": float("nan"), "coherence_to_motion": float("nan")}
+            else:
+                uG = float(np.mean([x for x, _ in uv_list]))
+                vG = float(np.mean([y for _, y in uv_list]))
+                coh01 = _coherence_01(uG, vG, mu, mv)
+
+                steering_flow[group] = {
+                    "u_ms": _r2(uG),
+                    "v_ms": _r2(vG),
+                    "coherence_to_motion": _r2(coh01),
+                }
+
+        hour_obj['levels'] = level_obj
+        hour_obj["steering_flow"] = steering_flow
 
         # Stream-write this hour immediately
         if out_started:
