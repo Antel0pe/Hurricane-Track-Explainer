@@ -85,3 +85,54 @@ export async function fetchHurricaneAnalysis(timestamp: string): Promise<Hurrica
 
   return raw;
 }
+
+export type JetLinesEntry = {
+  // matches API: { lines: [ [ [lat, lon], ... ], ... ] }
+  lines: Array<Array<[number, number]>>;
+};
+
+export async function fetchNAJetLines(datehour: string): Promise<JetLinesEntry> {
+  const url = `${API_HOST}/api/wind_arrow/${encodeURIComponent(datehour)}`;
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Failed to fetch NA jet lines (${res.status}): ${text || res.statusText}`
+    );
+  }
+
+  const data = (await res.json()) as Partial<JetLinesEntry>;
+
+  if (!data || typeof data !== "object" || !Array.isArray(data.lines)) {
+    throw new Error(`Invalid jet lines payload: ${JSON.stringify(data)}`);
+  }
+
+  // lightweight validation of nested shape
+  for (let i = 0; i < data.lines.length; i++) {
+    const line = (data.lines as any)[i];
+    if (!Array.isArray(line)) {
+      throw new Error(`Invalid jet line at index ${i}: ${JSON.stringify(line)}`);
+    }
+    for (let j = 0; j < line.length; j++) {
+      const pt = line[j];
+      if (
+        !Array.isArray(pt) ||
+        pt.length !== 2 ||
+        typeof pt[0] !== "number" ||
+        typeof pt[1] !== "number"
+      ) {
+        throw new Error(
+          `Invalid jet point at [${i}][${j}]: ${JSON.stringify(pt)}`
+        );
+      }
+    }
+  }
+
+  return { lines: data.lines as JetLinesEntry["lines"] };
+}

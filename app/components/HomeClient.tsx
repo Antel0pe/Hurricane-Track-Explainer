@@ -15,6 +15,11 @@ const HurricanePancake = dynamic(() => import("./layers/HurricanePancake"), {
   loading: () => null,
 });
 
+const WindArrow = dynamic(() => import("./layers/WindArrow"), {
+  ssr: false,
+  loading: () => null,
+});
+
 const TimeSlider = dynamic(() => import("./TimeSlider"), {
   ssr: false,
   loading: () => <div style={{ height: "100%" }} />,
@@ -23,7 +28,7 @@ const TimeSlider = dynamic(() => import("./TimeSlider"), {
 export default function HomeClient() {
   const [datehour, setDatehour] = useState(() => "2012-10-22T00:00");
   const [allReady, setAllReady] = useState(false);
-    const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   return (
     <div
@@ -56,6 +61,7 @@ export default function HomeClient() {
             }}
           >
             <HurricanePancake />
+            <WindArrow />
           </EarthBase>
         </div>
 
@@ -94,34 +100,34 @@ export default function HomeClient() {
       >
         <SidebarPane />
       </aside> */}
-       {/* Top-right toggle button */}
-<button
-  onClick={() => setSidebarOpen((v) => !v)}
-  aria-label={sidebarOpen ? "Close info" : "Open info"}
-  style={{
-    position: "absolute",
-    top: 14,
-    right: 14,
-    zIndex: 50,
-width: sidebarOpen ? 34 : 100,
-height: sidebarOpen ? 34 : 50,
-    borderRadius: 12,
-background: "rgba(70, 140, 255, 0.24)",
-border: "1px solid rgba(140, 190, 255, 0.32)",
+      {/* Top-right toggle button */}
+      <button
+        onClick={() => setSidebarOpen((v) => !v)}
+        aria-label={sidebarOpen ? "Close info" : "Open info"}
+        style={{
+          position: "absolute",
+          top: 14,
+          right: 14,
+          zIndex: 50,
+          width: sidebarOpen ? 34 : 100,
+          height: sidebarOpen ? 34 : 50,
+          borderRadius: 12,
+          background: "rgba(70, 140, 255, 0.24)",
+          border: "1px solid rgba(140, 190, 255, 0.32)",
 
-    color: "white",
-    cursor: "pointer",
-    backdropFilter: "blur(10px)",
-    display: "grid",
-    placeItems: "center",
-    userSelect: "none",
-    boxShadow: "0 6px 18px rgba(0,0,0,0.35)",
-  }}
->
-  <span style={{ fontSize: sidebarOpen ? 22 : 14, fontWeight: 600, lineHeight: 1, opacity: 0.95 }}>
-    {sidebarOpen ? "×" : "Explain"}
-  </span>
-</button>
+          color: "white",
+          cursor: "pointer",
+          backdropFilter: "blur(10px)",
+          display: "grid",
+          placeItems: "center",
+          userSelect: "none",
+          boxShadow: "0 6px 18px rgba(0,0,0,0.35)",
+        }}
+      >
+        <span style={{ fontSize: sidebarOpen ? 22 : 14, fontWeight: 600, lineHeight: 1, opacity: 0.95 }}>
+          {sidebarOpen ? "×" : "Explain"}
+        </span>
+      </button>
 
 
       {/* Optional: click-away scrim when open */}

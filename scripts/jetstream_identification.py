@@ -59,6 +59,7 @@ LEAF_PERCENTILE = 75
 NA_BBOX = (-170, -40, 20, 70)   # (lon_min, lon_max, lat_min, lat_max)
 TOP_K = 8
 MIN_INSIDE_FRAC = 0.30
+MINIMUM_POINTS_IN_LINE = 10
 
 # Quiver plotting
 QUIVER_STRIDE = 10
@@ -535,7 +536,6 @@ def score_and_filter_edges_by_bbox(
 
     return selected_edges, filtered, sel_mask
 
-# --- ADD helper (anywhere above main) ---
 def edge_pixels_to_latlon_line(edge, Lat, Lon):
     """
     Convert an edge (edge["pixels"] list of (y,x)) into a polyline:
@@ -666,8 +666,12 @@ def run_one_time_and_plot(
     lines = []
     for e in selected_edges:
         line = edge_pixels_to_latlon_line(e, Lat, Lon)
-        if len(line) >= 2:
+        if len(line) >= MINIMUM_POINTS_IN_LINE:
             lines.append(line)
+           
+    # simple way to sort of westerly wind direction 
+    for line in lines:
+        line.sort(key=lambda p: (p[1], p[0]))
 
     # Return lines instead of plotting
     return {
