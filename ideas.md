@@ -5,3 +5,5 @@
 - show why intensifying hurricane
 - more hurricanes
 - show coherence of steering flow
+- find weighted sum of wind uv surrounding flow that equals direction the hurricane goes? sort of backward retrospective of what steering flows were dominant
+- use the above weighted average to create average of gph like steering gph geometry?
