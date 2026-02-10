@@ -61,7 +61,7 @@ export default function HomeClient() {
             }}
           >
             <HurricanePancake />
-            <WindArrow />
+            {/* <WindArrow /> */}
           </EarthBase>
         </div>
 
